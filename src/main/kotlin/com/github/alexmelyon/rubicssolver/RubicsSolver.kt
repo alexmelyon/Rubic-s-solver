@@ -1,11 +1,5 @@
 package com.github.alexmelyon.rubicssolver
 
-import com.github.alexmelyon.rubicssolver.RubicsSolver.Companion.B
-import com.github.alexmelyon.rubicssolver.RubicsSolver.Companion.G
-import com.github.alexmelyon.rubicssolver.RubicsSolver.Companion.O
-import com.github.alexmelyon.rubicssolver.RubicsSolver.Companion.R
-import com.github.alexmelyon.rubicssolver.RubicsSolver.Companion.W
-import com.github.alexmelyon.rubicssolver.RubicsSolver.Companion.Y
 import java.io.Closeable
 import java.net.URLDecoder
 import java.net.URLEncoder
@@ -19,91 +13,17 @@ typealias SMove = Pair<String, TMove>
 abstract class RubicsSolver {
 
     companion object {
-        const val R = 1
-        const val W = 2
-        const val B = 3
-        const val Y = 4
-        const val G = 5
-        const val O = 6
+        const val R: Byte = 1
+        const val W: Byte = 2
+        const val B: Byte = 3
+        const val Y: Byte = 4
+        const val G: Byte = 5
+        const val O: Byte = 6
     }
 
     protected val storage = RubicsStorage()
 
-    protected class RubicsStorage : Closeable {
-
-        lateinit var connection: Connection
-        lateinit var statement: Statement
-
-        fun init() {
-            connection = DriverManager.getConnection("jdbc:sqlite::memory:")
-            statement = connection.createStatement()
-            statement.queryTimeout = 30
-
-            statement.executeUpdate("DROP TABLE IF EXISTS variants")
-            statement.executeUpdate(
-                "CREATE TABLE variants (" +
-                        "id INTEGER PRIMARY KEY AUTOINCREMENT, " +
-                        "cube STRING, " +
-                        "description STRING, " +
-                        "depth INTEGER, " +
-                        "previous_id INTEGER)"
-            )
-        }
-
-        fun add(variant: Variant) {
-            val cube = variant.cube.joinToString(",")
-            val sql = "INSERT INTO variants (cube, description, depth, previous_id) VALUES(?, ?, ?, ?)"
-            val stm = connection.prepareStatement(sql, Statement.RETURN_GENERATED_KEYS)
-            stm.setString(1, cube)
-            stm.setString(2, URLEncoder.encode(variant.description))
-            stm.setInt(3, variant.depth)
-            stm.setLong(4, variant.previousId)
-            val affectedRows = stm.executeUpdate()
-            val generated = stm.generatedKeys
-            val hasNext = generated.next()
-            val autoId = generated.getLong(1)
-            variant.id = autoId
-        }
-
-        fun getById(id: Long): Variant {
-            val rs = statement.executeQuery("SELECT * FROM variants WHERE id = $id")
-            val exists = rs.next()
-            try {
-                return Variant(
-                    rs.getLong("id"),
-                    rs.getString("cube").split(",").map { it.toInt() }.toIntArray(),
-                    URLDecoder.decode(rs.getString("description")),
-                    rs.getInt("depth"),
-                    rs.getLong("previous_id")
-                )
-            } catch (t: Throwable) {
-                println("Error id=$id $exists count=${getCount()} max=${getMax()}")
-                throw t
-            }
-        }
-
-        private fun getCount(): Int {
-            statement.executeQuery("SELECT COUNT(*) FROM variants").let { rs ->
-                rs.next()
-                return rs.getInt(1)
-            }
-        }
-
-        private fun getMax(): Int {
-            statement.executeQuery("SELECT MAX(id) FROM variants").let { rs ->
-                rs.next()
-                return rs.getInt(1)
-            }
-        }
-
-        override fun close() {
-            connection.close()
-        }
-
-
-    }
-
-    private val solved = intArrayOf(
+    private val solved = byteArrayOf(
         0, 0, 0, Y, Y, Y, 0, 0, 0, //  0  0  0,  3  4  5,  0  0  0
         0, 0, 0, Y, Y, Y, 0, 0, 0, //  0  0  0, 12 13 14,  0  0  0
         0, 0, 0, Y, Y, Y, 0, 0, 0, //  0  0  0, 21 22 23,  0  0  0
@@ -280,7 +200,7 @@ abstract class RubicsSolver {
         93 to 85
     )
 
-    fun move(cube: IntArray, motion: TMove): IntArray {
+    fun move(cube: ByteArray, motion: TMove): ByteArray {
         val newCube = cube.clone()
         for (item in motion) {
             newCube[item.second] = cube[item.first]
@@ -288,60 +208,9 @@ abstract class RubicsSolver {
         return newCube
     }
 
-    class Variant(var id: Long = 0L, val cube: IntArray, val description: String, val depth: Int, val previousId: Long)
+    class Variant(var id: Long = 0L, val cube: ByteArray, val description: String, val depth: Int, val previousId: Long)
 
-    abstract fun solve(cube: IntArray): String
-
-    class DeepSolverStrategy : RubicsSolver() {
-
-        override fun solve(cube: IntArray): String {
-            val motions: List<SMove> = listOf(
-                "R" to moveR,
-                "L" to moveL,
-                "U" to moveU,
-                "D" to moveD,
-                "F" to moveF,
-                "B" to moveB,
-                "R'" to moveR.map { it.second to it.first },
-                "L'" to moveL.map { it.second to it.first },
-                "U'" to moveU.map { it.second to it.first },
-                "D'" to moveD.map { it.second to it.first },
-                "F'" to moveF.map { it.second to it.first },
-                "B'" to moveB.map { it.second to it.first }
-            )
-            storage.init()
-            val initial = Variant(1, cube, "", depth = 0, previousId = 0)
-            storage.add(initial)
-            var index = 0
-            val maxDepth = 999
-            try {
-                while (true) {
-                    val ii = index
-                    index++
-                    val current = storage.getById((ii + 1).toLong())
-                    if (current.depth > maxDepth) {
-                        throw RuntimeException("Max depth $maxDepth reached")
-                    }
-                    if (isSolved(current.cube)) {
-                        return current.description
-                    }
-                    if (isRecursion(current)) {
-                        println("$ii ${current.description} RECURSION")
-                        continue
-                    }
-                    println("$ii ${current.description}")
-                    motions.forEach { motion ->
-                        val c = move(current.cube, motion.second)
-                        val desc = current.description + " " + motion.first
-                        val v = Variant(id = 0L, c, desc, current.depth + 1, current.id)
-                        storage.add(v)
-                    }
-                }
-            } finally {
-                storage.close()
-            }
-        }
-    }
+    abstract fun solve(cube: ByteArray): String
 
     protected fun isRecursion(variant: Variant): Boolean {
         var next = variant
@@ -362,7 +231,7 @@ abstract class RubicsSolver {
         return false
     }
 
-    private fun IntArray?.deepEquals(other: IntArray?): Boolean {
+    private fun ByteArray?.deepEquals(other: ByteArray?): Boolean {
         if (this == null || other == null) {
             return false
         }
@@ -381,29 +250,8 @@ abstract class RubicsSolver {
         return true
     }
 
-    protected fun isSolved(cube: IntArray): Boolean {
+    protected fun isSolved(cube: ByteArray): Boolean {
         return solved.deepEquals(cube)
     }
-}
-
-fun main() {
-
-    val cube = intArrayOf(
-        0, 0, 0, B, O, R, 0, 0, 0,
-        0, 0, 0, G, R, R, 0, 0, 0,
-        0, 0, 0, Y, Y, R, 0, 0, 0,
-        Y, O, R, G, O, B, W, W, W,
-        G, Y, Y, R, B, B, W, W, W,
-        Y, Y, O, G, B, B, W, W, W,
-        0, 0, 0, Y, R, O, 0, 0, 0,
-        0, 0, 0, G, O, O, 0, 0, 0,
-        0, 0, 0, B, B, O, 0, 0, 0,
-        0, 0, 0, O, Y, G, 0, 0, 0,
-        0, 0, 0, R, G, G, 0, 0, 0,
-        0, 0, 0, R, B, G, 0, 0, 0
-    )
-    val solver = RubicsSolver.DeepSolverStrategy()
-    val solution = solver.solve(cube)
-    println("Solved $solution")
 
 }
